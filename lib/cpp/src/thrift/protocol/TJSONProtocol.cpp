@@ -33,6 +33,8 @@
 
 using namespace apache::thrift::transport;
 
+using wcvt = std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t>;
+
 namespace apache {
 namespace thrift {
 namespace protocol {
@@ -452,14 +454,21 @@ uint32_t TJSONProtocol::writeJSONChar(uint8_t ch) {
   }
 }
 
+std::string to_utf8(const std::string& str, const std::locale& loc = std::locale{}) {
+    std::u32string wstr(str.size(), U'\0');
+    std::use_facet<std::ctype<char32_t>>(loc).widen(str.data(), str.data() + str.size(), &wstr[0]);
+    return wcvt{}.to_bytes(wstr.data(), wstr.data() + wstr.size());
+}
+
 // Write out the contents of the string str as a JSON string, escaping
 // characters as appropriate.
 uint32_t TJSONProtocol::writeJSONString(const std::string& str) {
+  std::string str1 = to_utf8(str);
   uint32_t result = context_->write(*trans_);
   result += 2; // For quotes
   trans_->write(&kJSONStringDelimiter, 1);
-  std::string::const_iterator iter(str.begin());
-  std::string::const_iterator end(str.end());
+  std::string::const_iterator iter(str1.begin());
+  std::string::const_iterator end(str1.end());
   while (iter != end) {
     result += writeJSONChar(*iter++);
   }
@@ -734,6 +743,14 @@ uint32_t TJSONProtocol::readJSONEscapeChar(uint16_t* out) {
   return 4;
 }
 
+std::string from_utf8(const std::string& str, const std::locale& loc = std::locale{}) 
+{
+    auto wstr = wcvt{}.from_bytes(str);
+    std::string result(wstr.size(), '0');
+    std::use_facet<std::ctype<char32_t>>(loc).narrow(wstr.data(), wstr.data() + wstr.size(), '?', &result[0]);
+    return result;
+}
+
 // Decodes a JSON string, including unescaping, and returns the string via str
 uint32_t TJSONProtocol::readJSONString(std::string& str, bool skipContext) {
   uint32_t result = (skipContext ? 0 : context_->read(reader_));
@@ -781,6 +798,20 @@ uint32_t TJSONProtocol::readJSONString(std::string& str, bool skipContext) {
       throw TProtocolException(TProtocolException::INVALID_DATA,
                                "Missing UTF-16 low surrogate pair.");
     }
+	
+	//** patch for utf8
+    if (ch > 194) {
+        std::string test = "";
+        test += ch;
+        test += reader_.read();
+        if (ch >= 224)
+            test += reader_.read();
+        if (ch >= 240)
+            test += reader_.read();
+        str += from_utf8(test);
+        continue;
+    }
+	
     str += ch;
   }
 
